@@ -51,10 +51,10 @@
   "keywords": ["solana", "transaction", "retry", "jito", "priority-fee", "rpc", "failover", "web3"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/solana-tx-kit/solana-tx-kit.git"
+    "url": "git+https://github.com/0xJosee/solana-tx-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/solana-tx-kit/solana-tx-kit/issues"
+    "url": "https://github.com/0xJosee/solana-tx-kit/issues"
   },
-  "homepage": "https://github.com/solana-tx-kit/solana-tx-kit#readme"
+  "homepage": "https://github.com/0xJosee/solana-tx-kit#readme"
 }
