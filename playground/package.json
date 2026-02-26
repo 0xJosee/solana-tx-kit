@@ -1,0 +1,21 @@
+{
+  "name": "solana-tx-kit-playground",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "retry": "tsx src/01-retry.ts",
+    "blockhash": "tsx src/02-blockhash.ts",
+    "priority-fee": "tsx src/03-priority-fee.ts",
+    "simulation": "tsx src/04-simulation.ts",
+    "rpc-pool": "tsx src/05-rpc-pool.ts",
+    "send": "tsx src/06-send-transfer.ts",
+    "all": "tsx src/run-all.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "solana-tx-kit": "workspace:*",
+    "dotenv": "^16.4.0",
+    "tsx": "^4.19.0"
+  }
+}
