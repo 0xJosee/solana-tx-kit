@@ -11,8 +11,10 @@ import type { Logger } from "../types.js";
 export interface SenderConfig {
   /** RPC connection(s) configuration */
   rpc: ConnectionPoolConfig | { url: string };
-  /** Transaction signer */
+  /** Primary transaction signer (fee payer) */
   signer: Keypair;
+  /** Default extra signers applied to every send (e.g. delegate keypairs) */
+  extraSigners?: Keypair[] | undefined;
   /** Retry configuration */
   retry?: Partial<RetryConfig>;
   /** Priority fee configuration. Set to false to disable */
@@ -61,6 +63,8 @@ export interface SendOptions {
   skipConfirmation?: boolean;
   /** Custom commitment for this send only */
   commitment?: Commitment;
+  /** Additional signers for this transaction (e.g. positionKeypair). Merged with config.extraSigners. */
+  extraSigners?: Keypair[];
 }
 
 export function isConnectionPoolConfig(config: SenderConfig["rpc"]): config is ConnectionPoolConfig {

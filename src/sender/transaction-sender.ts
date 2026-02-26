@@ -88,7 +88,7 @@ export class TransactionSender {
     return withRetry(
       async (ctx) => {
         const blockhashInfo = await this.blockhashManager.getBlockhash();
-        this.signTransaction(tx, blockhashInfo);
+        this.signTransaction(tx, blockhashInfo, options?.extraSigners);
 
         const unitsConsumed = await this.runSimulation(tx, options);
 
@@ -131,7 +131,11 @@ export class TransactionSender {
    */
   async sendJitoBundle(
     transactions: SolanaTransaction[],
-    options?: { tipLamports?: number; waitForConfirmation?: boolean },
+    options?: {
+      tipLamports?: number;
+      waitForConfirmation?: boolean;
+      extraSigners?: import("@solana/web3.js").Keypair[];
+    },
   ): Promise<BundleResult> {
     if (!this.jitoBundleSender) {
       throw new SolTxError(SolTxErrorCode.BUNDLE_FAILED, "Jito is not configured. Use .withJito() in the builder.");
@@ -151,14 +155,7 @@ export class TransactionSender {
     // Sign all transactions
     for (const tx of transactions) {
       const blockhashInfo = await this.blockhashManager.getBlockhash();
-      if (isLegacyTransaction(tx)) {
-        tx.recentBlockhash = blockhashInfo.blockhash;
-        tx.feePayer = this.config.signer.publicKey;
-        tx.sign(this.config.signer);
-      } else {
-        tx.message.recentBlockhash = blockhashInfo.blockhash;
-        tx.sign([this.config.signer]);
-      }
+      this.signTransaction(tx, blockhashInfo, options?.extraSigners);
     }
 
     return this.jitoBundleSender.sendBundle(transactions, {
@@ -198,15 +195,20 @@ export class TransactionSender {
     return { tx: transaction, feeAmount: undefined };
   }
 
-  /** Set blockhash, fee payer, and sign the transaction */
-  private signTransaction(tx: SolanaTransaction, blockhashInfo: { blockhash: string }): void {
+  /** Set blockhash, fee payer, and sign the transaction with all signers */
+  private signTransaction(
+    tx: SolanaTransaction,
+    blockhashInfo: { blockhash: string },
+    extraSigners?: import("@solana/web3.js").Keypair[],
+  ): void {
+    const allSigners = [this.config.signer, ...(this.config.extraSigners ?? []), ...(extraSigners ?? [])];
     if (isLegacyTransaction(tx)) {
       tx.recentBlockhash = blockhashInfo.blockhash;
       tx.feePayer = this.config.signer.publicKey;
-      tx.sign(this.config.signer);
+      tx.sign(...allSigners);
     } else {
       tx.message.recentBlockhash = blockhashInfo.blockhash;
-      tx.sign([this.config.signer]);
+      tx.sign(allSigners);
     }
   }
 

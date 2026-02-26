@@ -80,4 +80,14 @@ describe("TransactionSenderBuilder", () => {
     senders.push(sender);
     expect(sender).toBeDefined();
   });
+
+  it("builds with extra signers", () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(Keypair.generate())
+      .withExtraSigners([Keypair.generate(), Keypair.generate()])
+      .build();
+    senders.push(sender);
+    expect(sender).toBeDefined();
+  });
 });

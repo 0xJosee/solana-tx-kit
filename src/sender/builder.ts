@@ -49,6 +49,12 @@ export class TransactionSenderBuilder {
     return this;
   }
 
+  /** Set default extra signers applied to every send */
+  withExtraSigners(signers: Keypair[]): this {
+    this.config.extraSigners = signers;
+    return this;
+  }
+
   /** Configure priority fee estimation */
   withPriorityFees(config?: Partial<FeeEstimateConfig>): this {
     this.config.priorityFee = config ?? {};
