@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SolTxError, SolTxErrorCode } from "../../src/errors.js";
 import { classifyError, isBlockhashExpired, isRateLimited } from "../../src/retry/error-classifier.js";
 
 describe("classifyError", () => {
@@ -55,6 +56,14 @@ describe("classifyError", () => {
     expect(result.retryable).toBe(false);
     expect(result.errorType).toBe("UNKNOWN");
   });
+
+  it("classifies SolTxError(BLOCKHASH_EXPIRED) as retryable + needsResign", () => {
+    const err = new SolTxError(SolTxErrorCode.BLOCKHASH_EXPIRED, "Blockhash expired during confirmation");
+    const result = classifyError(err);
+    expect(result.retryable).toBe(true);
+    expect(result.needsResign).toBe(true);
+    expect(result.errorType).toBe("BLOCKHASH_EXPIRED");
+  });
 });
 
 describe("isBlockhashExpired", () => {
@@ -68,6 +77,11 @@ describe("isBlockhashExpired", () => {
 
   it("returns false for other errors", () => {
     expect(isBlockhashExpired(new Error("insufficient funds"))).toBe(false);
+  });
+
+  it("returns true for SolTxError with BLOCKHASH_EXPIRED code", () => {
+    const err = new SolTxError(SolTxErrorCode.BLOCKHASH_EXPIRED, "Blockhash expired during confirmation");
+    expect(isBlockhashExpired(err)).toBe(true);
   });
 });
 

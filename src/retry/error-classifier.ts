@@ -1,3 +1,5 @@
+import { SolTxError, SolTxErrorCode } from "../errors.js";
+
 export interface ErrorClassification {
   retryable: boolean;
   /** If true, the transaction must be re-signed with a fresh blockhash before retrying */
@@ -42,6 +44,11 @@ export function classifyError(error: Error): ErrorClassification {
     }
   }
 
+  // Check typed BLOCKHASH_EXPIRED before network/message loops
+  if (isBlockhashExpired(error)) {
+    return { retryable: true, needsResign: true, errorType: "BLOCKHASH_EXPIRED" };
+  }
+
   // Check network errors by code
   if (code && NETWORK_ERROR_CODES.includes(code)) {
     return { retryable: true, needsResign: false, errorType: code };
@@ -68,6 +75,7 @@ export function classifyError(error: Error): ErrorClassification {
 }
 
 export function isBlockhashExpired(error: Error): boolean {
+  if (error instanceof SolTxError && error.code === SolTxErrorCode.BLOCKHASH_EXPIRED) return true;
   const msg = error.message ?? "";
   return NEEDS_RESIGN_MESSAGES.some((pattern) => msg.includes(pattern));
 }
