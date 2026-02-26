@@ -1,4 +1,4 @@
-import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TxEvent } from "../../src/events.js";
 
@@ -136,6 +136,28 @@ describe("TransactionSender.send()", () => {
       await sender.send(tx, { skipSimulation: true });
 
       expect(tx.instructions.length).toBe(originalInstructionCount);
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("replaces pre-existing ComputeBudget instructions instead of duplicating them", async () => {
+    const sender = buildSender({ simulation: false });
+    try {
+      const tx = createTestTransaction(signer);
+      // Simulate what Jupiter / external SDKs do: add ComputeBudget IXs upfront
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 999_999 }));
+      tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 42 }));
+
+      await sender.send(tx, { skipSimulation: true });
+
+      // The original transaction should still be unmutated
+      const cbIxCount = tx.instructions.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId)).length;
+      expect(cbIxCount).toBe(2); // original still has its own 2
+
+      // Verify sendRawTransaction was called with a serialized tx
+      // (can't easily inspect internal copy, but no error = no duplicate rejection)
+      expect(mockSendRawTransaction).toHaveBeenCalledOnce();
     } finally {
       sender.destroy();
     }

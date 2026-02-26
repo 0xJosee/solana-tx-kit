@@ -1,4 +1,4 @@
-import { Transaction as TransactionClass } from "@solana/web3.js";
+import { ComputeBudgetProgram, Transaction as TransactionClass } from "@solana/web3.js";
 import { BlockhashManager } from "../blockhash/blockhash-manager.js";
 import { TransactionConfirmer } from "../confirmation/confirmer.js";
 import { DEFAULT_PRIORITY_FEE_CONFIG } from "../constants.js";
@@ -175,7 +175,8 @@ export class TransactionSender {
     this.events.removeAllListeners();
   }
 
-  /** Build a working copy of the transaction with compute budget instructions prepended */
+  /** Build a working copy of the transaction with compute budget instructions prepended.
+   *  Any existing ComputeBudget instructions in the original are stripped and replaced. */
   private async prepareTransaction(
     transaction: SolanaTransaction,
     options?: SendOptions,
@@ -189,7 +190,9 @@ export class TransactionSender {
       });
       const copy = new TransactionClass();
       for (const ix of budgetInstructions) copy.add(ix);
-      for (const ix of transaction.instructions) copy.add(ix);
+      for (const ix of transaction.instructions) {
+        if (!ix.programId.equals(ComputeBudgetProgram.programId)) copy.add(ix);
+      }
       return { tx: copy, feeAmount };
     }
     return { tx: transaction, feeAmount: undefined };
