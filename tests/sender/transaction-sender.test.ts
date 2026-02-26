@@ -155,8 +155,15 @@ describe("TransactionSender.send()", () => {
       const cbIxCount = tx.instructions.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId)).length;
       expect(cbIxCount).toBe(2); // original still has its own 2
 
-      // Verify sendRawTransaction was called with a serialized tx
-      // (can't easily inspect internal copy, but no error = no duplicate rejection)
+      // The sent transaction should carry exactly 2 ComputeBudget IXs (no duplicates)
+      // and must reuse the original SetComputeUnitLimit value (999_999), not the library default.
+      const serializedTx = mockSendRawTransaction.mock.calls[0]?.[0] as Buffer;
+      const sentTx = Transaction.from(serializedTx);
+      const sentCbIxs = sentTx.instructions.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId));
+      expect(sentCbIxs.length).toBe(2);
+      const cuLimitIx = sentCbIxs.find((ix) => ix.data[0] === 0x02);
+      expect(cuLimitIx?.data.readUInt32LE(1)).toBe(999_999);
+
       expect(mockSendRawTransaction).toHaveBeenCalledOnce();
     } finally {
       sender.destroy();

@@ -176,14 +176,26 @@ export class TransactionSender {
   }
 
   /** Build a working copy of the transaction with compute budget instructions prepended.
-   *  Any existing ComputeBudget instructions in the original are stripped and replaced. */
+   *  Any existing ComputeBudget instructions in the original are stripped and replaced.
+   *  If the original contains a SetComputeUnitLimit and no computeUnits override is provided,
+   *  that value is extracted and reused so externally-set limits (Jupiter, Meteora, etc.) are honoured. */
   private async prepareTransaction(
     transaction: SolanaTransaction,
     options?: SendOptions,
   ): Promise<{ tx: SolanaTransaction; feeAmount: number | undefined }> {
     if (this.config.priorityFee !== false && isLegacyTransaction(transaction)) {
       const feeAmount = await this.resolvePriorityFee(options);
-      const computeUnits = options?.computeUnits ?? DEFAULT_PRIORITY_FEE_CONFIG.defaultComputeUnits;
+
+      // SetComputeUnitLimit discriminant is 0x02; units are a uint32 at offset 1.
+      const existingCuLimitIx = transaction.instructions.find(
+        (ix) => ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 0x02,
+      );
+      const computeUnits =
+        options?.computeUnits ??
+        (existingCuLimitIx !== undefined
+          ? existingCuLimitIx.data.readUInt32LE(1)
+          : DEFAULT_PRIORITY_FEE_CONFIG.defaultComputeUnits);
+
       const budgetInstructions = createComputeBudgetInstructions({
         computeUnits,
         microLamports: feeAmount,
