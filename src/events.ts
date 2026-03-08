@@ -19,7 +19,7 @@ export enum TxEvent {
 
 export interface TxEventMap {
   [TxEvent.SENDING]: { transaction: SolanaTransaction; attempt: number };
-  [TxEvent.SIMULATED]: { signature: string; unitsConsumed: number; logs: string[] };
+  [TxEvent.SIMULATED]: { unitsConsumed: number; logs: string[] };
   [TxEvent.SENT]: { signature: string; attempt: number };
   [TxEvent.CONFIRMING]: { signature: string; commitment: string };
   [TxEvent.CONFIRMED]: { signature: string; slot: number; commitment: string };

@@ -10,7 +10,7 @@ const EMA_ALPHA = 0.3; // Smoothing factor for exponential moving average
 export class HealthTracker {
   private readonly breaker: CircuitBreaker;
   private metrics: HealthMetrics = {
-    latencyEma: 0,
+    latencyEma: null,
     errorCount: 0,
     successCount: 0,
     errorRate: 0,
@@ -45,7 +45,7 @@ export class HealthTracker {
     this.metrics.lastSuccessAt = Date.now();
 
     // Update latency EMA
-    if (this.metrics.latencyEma === 0) {
+    if (this.metrics.latencyEma === null) {
       this.metrics.latencyEma = latencyMs;
     } else {
       this.metrics.latencyEma = EMA_ALPHA * latencyMs + (1 - EMA_ALPHA) * this.metrics.latencyEma;
@@ -81,7 +81,11 @@ export class HealthTracker {
   }
 
   updateSlotLag(highestSlot: number): void {
-    this.metrics.slotLag = highestSlot - this.metrics.lastSlot;
+    this.metrics.slotLag = Math.max(0, highestSlot - this.metrics.lastSlot);
+  }
+
+  destroy(): void {
+    // No interval to clear currently; exposed for forward compatibility
   }
 
   getConnection(): Connection {

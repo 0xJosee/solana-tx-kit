@@ -20,6 +20,9 @@ export enum SolTxErrorCode {
   TIP_TOO_LOW = "TIP_TOO_LOW",
 
   FEE_ESTIMATION_FAILED = "FEE_ESTIMATION_FAILED",
+
+  INVALID_ARGUMENT = "INVALID_ARGUMENT",
+  SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE",
 }
 
 /** Structured error with a machine-readable code and optional cause/context */

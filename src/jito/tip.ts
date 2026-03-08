@@ -1,20 +1,17 @@
 import { type PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
 import { JITO_MIN_TIP_LAMPORTS, JITO_TIP_ACCOUNTS } from "../constants.js";
 
-let tipIndex = 0;
-
-/** Get the next tip account using round-robin rotation */
+/** Get a random tip account */
 export function getNextTipAccount(): PublicKey {
-  const idx = tipIndex % JITO_TIP_ACCOUNTS.length;
-  tipIndex++;
+  const idx = Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length);
   const account = JITO_TIP_ACCOUNTS[idx];
   if (!account) throw new Error(`Invalid tip account index: ${idx}`);
   return account;
 }
 
-/** Reset the tip rotation index (useful for testing) */
+/** @deprecated No longer uses global state; kept for backward compatibility */
 export function resetTipRotation(): void {
-  tipIndex = 0;
+  // No-op: tip selection is now stateless (random)
 }
 
 /** Create a SOL transfer instruction to a Jito tip account */

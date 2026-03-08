@@ -9,21 +9,22 @@ describe("tip", () => {
   });
 
   describe("getNextTipAccount", () => {
-    it("rotates through all 8 tip accounts", () => {
+    it("returns accounts from the tip account pool over many calls", () => {
+      // With random selection, we expect high coverage over many calls (probabilistic)
       const accounts = new Set<string>();
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 100; i++) {
         accounts.add(getNextTipAccount().toBase58());
       }
+      // With 100 calls and 8 accounts, we expect all to appear with overwhelming probability
       expect(accounts.size).toBe(8);
     });
 
-    it("wraps around after 8 calls", () => {
-      const first = getNextTipAccount().toBase58();
-      for (let i = 0; i < 7; i++) {
-        getNextTipAccount();
+    it("each call returns a valid Jito tip account", () => {
+      for (let i = 0; i < 8; i++) {
+        const account = getNextTipAccount();
+        const valid = JITO_TIP_ACCOUNTS.some((a) => a.equals(account));
+        expect(valid).toBe(true);
       }
-      const ninth = getNextTipAccount().toBase58();
-      expect(ninth).toBe(first);
     });
 
     it("returns a valid Jito tip account", () => {
