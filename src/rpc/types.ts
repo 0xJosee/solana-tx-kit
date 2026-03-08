@@ -12,8 +12,8 @@ export interface RpcEndpointConfig {
 }
 
 export interface HealthMetrics {
-  /** Exponential moving average of latency in ms */
-  latencyEma: number;
+  /** Exponential moving average of latency in ms (null until first success) */
+  latencyEma: number | null;
   /** Total errors in the sliding window */
   errorCount: number;
   /** Total successes in the sliding window */

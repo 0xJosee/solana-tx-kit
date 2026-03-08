@@ -45,5 +45,10 @@ export { TypedEventEmitter, TxEvent } from "./events.js";
 export type { TxEventMap } from "./events.js";
 export type { Logger, SolanaTransaction, Result } from "./types.js";
 export { isVersionedTransaction, isLegacyTransaction } from "./utils.js";
-export { JITO_TIP_ACCOUNTS, JITO_BLOCK_ENGINE_URL } from "./constants.js";
+export {
+  JITO_TIP_ACCOUNTS,
+  JITO_BLOCK_ENGINE_URL,
+  DEFAULT_RETRY_CONFIG,
+  DEFAULT_PRIORITY_FEE_CONFIG,
+} from "./constants.js";
 export { createDefaultLogger } from "./logger.js";

@@ -23,7 +23,6 @@ const NETWORK_ERROR_CODES = ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "ECONNREFUS
 
 const NON_RETRYABLE_MESSAGES = [
   "insufficient funds",
-  "Insufficient funds",
   "invalid account data",
   "Account not found",
   "Signature verification failed",
@@ -34,13 +33,14 @@ const NON_RETRYABLE_MESSAGES = [
 
 /** Classify an error as retryable or non-retryable based on message patterns and error codes */
 export function classifyError(error: Error): ErrorClassification {
-  const msg = error.message ?? "";
+  const msg = (error.message ?? "").toLowerCase();
   const code = (error as NodeJS.ErrnoException).code;
 
-  // Check non-retryable first
+  // Check non-retryable first (case-insensitive)
   for (const pattern of NON_RETRYABLE_MESSAGES) {
-    if (msg.includes(pattern)) {
-      return { retryable: false, needsResign: false, errorType: pattern };
+    if (msg.includes(pattern.toLowerCase())) {
+      const errorType = pattern === "insufficient funds" ? SolTxErrorCode.INSUFFICIENT_FUNDS : pattern;
+      return { retryable: false, needsResign: false, errorType };
     }
   }
 
@@ -55,17 +55,17 @@ export function classifyError(error: Error): ErrorClassification {
   }
 
   // HTTP status code detection
-  if (msg.includes("429") || msg.includes("Too many requests")) {
-    return { retryable: true, needsResign: false, errorType: "RATE_LIMITED" };
+  if (msg.includes("429") || msg.includes("too many requests")) {
+    return { retryable: true, needsResign: false, errorType: SolTxErrorCode.RATE_LIMITED };
   }
-  if (msg.includes("503") || msg.includes("Service unavailable")) {
-    return { retryable: true, needsResign: false, errorType: "SERVICE_UNAVAILABLE" };
+  if (msg.includes("503") || msg.includes("service unavailable")) {
+    return { retryable: true, needsResign: false, errorType: SolTxErrorCode.SERVICE_UNAVAILABLE };
   }
 
-  // Check retryable message patterns
+  // Check retryable message patterns (case-insensitive)
   for (const pattern of RETRYABLE_MESSAGES) {
-    if (msg.includes(pattern)) {
-      const needsResign = NEEDS_RESIGN_MESSAGES.some((p) => msg.includes(p));
+    if (msg.includes(pattern.toLowerCase())) {
+      const needsResign = NEEDS_RESIGN_MESSAGES.some((p) => msg.includes(p.toLowerCase()));
       return { retryable: true, needsResign, errorType: pattern };
     }
   }
@@ -76,11 +76,11 @@ export function classifyError(error: Error): ErrorClassification {
 
 export function isBlockhashExpired(error: Error): boolean {
   if (error instanceof SolTxError && error.code === SolTxErrorCode.BLOCKHASH_EXPIRED) return true;
-  const msg = error.message ?? "";
-  return NEEDS_RESIGN_MESSAGES.some((pattern) => msg.includes(pattern));
+  const msg = (error.message ?? "").toLowerCase();
+  return NEEDS_RESIGN_MESSAGES.some((pattern) => msg.includes(pattern.toLowerCase()));
 }
 
 export function isRateLimited(error: Error): boolean {
-  const msg = error.message ?? "";
-  return msg.includes("429") || msg.includes("Too many requests");
+  const msg = (error.message ?? "").toLowerCase();
+  return msg.includes("429") || msg.includes("too many requests");
 }

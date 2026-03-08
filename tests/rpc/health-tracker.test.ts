@@ -200,7 +200,7 @@ describe("HealthTracker", () => {
     it("reflects correct initial state", () => {
       const tracker = createTracker();
       const metrics = tracker.getMetrics();
-      expect(metrics.latencyEma).toBe(0);
+      expect(metrics.latencyEma).toBeNull();
       expect(metrics.errorCount).toBe(0);
       expect(metrics.successCount).toBe(0);
       expect(metrics.errorRate).toBe(0);

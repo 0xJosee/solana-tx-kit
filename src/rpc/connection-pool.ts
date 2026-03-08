@@ -104,13 +104,16 @@ export class ConnectionPool {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = undefined;
     }
+    for (const tracker of this.trackers) {
+      tracker.destroy();
+    }
   }
 
   private selectByLatency(available: HealthTracker[]): Connection {
     const sorted = [...available].sort((a, b) => {
-      const aMetrics = a.getMetrics();
-      const bMetrics = b.getMetrics();
-      return aMetrics.latencyEma - bMetrics.latencyEma;
+      const aLatency = a.getMetrics().latencyEma ?? Number.MAX_SAFE_INTEGER;
+      const bLatency = b.getMetrics().latencyEma ?? Number.MAX_SAFE_INTEGER;
+      return aLatency - bLatency;
     });
     const best = sorted[0];
     if (!best) throw new SolTxError(SolTxErrorCode.ALL_ENDPOINTS_UNHEALTHY, "No endpoints available");
@@ -124,7 +127,7 @@ export class ConnectionPool {
     }
 
     const position = this.roundRobinIndex % totalWeight;
-    this.roundRobinIndex++;
+    this.roundRobinIndex = (this.roundRobinIndex + 1) % totalWeight;
 
     let cumulative = 0;
     for (const tracker of available) {

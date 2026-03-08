@@ -13,6 +13,8 @@ export class BlockhashManager {
   private refreshInterval?: ReturnType<typeof setInterval> | undefined;
   private fetchPromise: Promise<BlockhashInfo> | null = null;
   private readonly config: BlockhashManagerConfig;
+  private consecutiveFailures = 0;
+  private destroyed = false;
 
   constructor(
     private readonly connection: Connection,
@@ -27,13 +29,20 @@ export class BlockhashManager {
     if (this.refreshInterval) return;
     this.refreshInterval = setInterval(() => {
       this.refreshBlockhash().catch((err) => {
-        this.logger?.warn("Background blockhash refresh failed", { error: String(err) });
+        this.consecutiveFailures++;
+        const logLevel = this.consecutiveFailures >= 3 ? "error" : "warn";
+        this.logger?.[logLevel]("Background blockhash refresh failed", {
+          error: String(err),
+          consecutiveFailures: this.consecutiveFailures,
+        });
       });
     }, this.config.refreshIntervalMs);
   }
 
   /** Get a valid blockhash. Fetches fresh one if cache is stale or missing */
   async getBlockhash(): Promise<BlockhashInfo> {
+    if (this.destroyed)
+      throw new SolTxError(SolTxErrorCode.BLOCKHASH_FETCH_FAILED, "BlockhashManager has been destroyed");
     if (this.cache && !this.isStale(this.cache)) {
       return this.cache;
     }
@@ -51,6 +60,7 @@ export class BlockhashManager {
     try {
       const info = await this.fetchPromise;
       this.cache = info;
+      this.consecutiveFailures = 0;
       return info;
     } finally {
       this.fetchPromise = null;
@@ -78,6 +88,7 @@ export class BlockhashManager {
 
   /** Stop background refresh */
   destroy(): void {
+    this.destroyed = true;
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
       this.refreshInterval = undefined;
@@ -89,8 +100,17 @@ export class BlockhashManager {
   }
 
   private async fetchBlockhash(): Promise<BlockhashInfo> {
+    const timeoutMs = this.config.fetchTimeoutMs ?? 10_000;
     try {
-      const result = await this.connection.getLatestBlockhash(this.config.commitment);
+      const result = await Promise.race([
+        this.connection.getLatestBlockhash(this.config.commitment),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new SolTxError(SolTxErrorCode.BLOCKHASH_FETCH_FAILED, "getLatestBlockhash timed out")),
+            timeoutMs,
+          ),
+        ),
+      ]);
       const info: BlockhashInfo = {
         blockhash: result.blockhash,
         lastValidBlockHeight: result.lastValidBlockHeight,
@@ -99,6 +119,7 @@ export class BlockhashManager {
       this.logger?.debug("Fetched new blockhash", { blockhash: `${info.blockhash.slice(0, 12)}...` });
       return info;
     } catch (err) {
+      if (err instanceof SolTxError) throw err;
       throw new SolTxError(
         SolTxErrorCode.BLOCKHASH_FETCH_FAILED,
         "Failed to fetch blockhash. Verify your RPC endpoint is reachable and responding.",

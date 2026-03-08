@@ -13,4 +13,6 @@ export interface BlockhashManagerConfig {
   refreshIntervalMs: number;
   /** Commitment for fetching (default: "confirmed") */
   commitment: Commitment;
+  /** Timeout for getLatestBlockhash RPC call in ms (default: 10_000) */
+  fetchTimeoutMs?: number;
 }

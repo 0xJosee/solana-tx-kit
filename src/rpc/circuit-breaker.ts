@@ -23,6 +23,9 @@ export class CircuitBreaker {
 
   constructor(config?: Partial<CircuitBreakerConfig>) {
     this.config = { ...DEFAULT_CIRCUIT_BREAKER_CONFIG, ...config };
+    if (this.config.failureThreshold <= 0) throw new Error("failureThreshold must be > 0");
+    if (this.config.resetTimeoutMs <= 0) throw new Error("resetTimeoutMs must be > 0");
+    if (this.config.windowMs <= 0) throw new Error("windowMs must be > 0");
   }
 
   get currentState(): CircuitState {
@@ -53,6 +56,11 @@ export class CircuitBreaker {
     // Prune failures outside the window
     this.failures = this.failures.filter((t) => now - t < this.config.windowMs);
     this.failures.push(now);
+
+    // Cap array size to prevent unbounded growth
+    if (this.failures.length > this.config.failureThreshold * 2) {
+      this.failures = this.failures.slice(-this.config.failureThreshold * 2);
+    }
 
     if (this.failures.length >= this.config.failureThreshold) {
       this.state = CircuitState.OPEN;

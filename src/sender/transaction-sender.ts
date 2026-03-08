@@ -32,6 +32,7 @@ export class TransactionSender {
   private readonly jitoBundleSender?: JitoBundleSender;
   private readonly logger: Logger;
   private readonly config: Readonly<SenderConfig>;
+  private destroyed = false;
 
   /** @param config - Full sender configuration. Prefer using {@link TransactionSender.builder} for construction. */
   constructor(config: SenderConfig) {
@@ -81,48 +82,55 @@ export class TransactionSender {
    * @throws {SolTxError} On simulation failure, non-retryable errors, or exhausted retries.
    */
   async send(transaction: SolanaTransaction, options?: SendOptions): Promise<SendResult> {
+    if (this.destroyed) throw new SolTxError(SolTxErrorCode.NON_RETRYABLE, "TransactionSender has been destroyed");
     const startTime = Date.now();
     const commitment = options?.commitment ?? this.config.commitment ?? "confirmed";
     const { tx, feeAmount } = await this.prepareTransaction(transaction, options);
 
-    return withRetry(
-      async (ctx) => {
-        const blockhashInfo = await this.blockhashManager.getBlockhash();
-        this.signTransaction(tx, blockhashInfo, options?.extraSigners);
+    try {
+      return await withRetry(
+        async (ctx) => {
+          const blockhashInfo = await this.blockhashManager.getBlockhash();
+          this.signTransaction(tx, blockhashInfo, options?.extraSigners);
 
-        const unitsConsumed = await this.runSimulation(tx, options);
+          const unitsConsumed = await this.runSimulation(tx, options);
 
-        this.events.emit(TxEvent.SENDING, { transaction: tx, attempt: ctx.attempt });
-        const signature = await this.sendRawTransaction(tx);
-        this.events.emit(TxEvent.SENT, { signature, attempt: ctx.attempt });
+          this.events.emit(TxEvent.SENDING, { transaction: tx, attempt: ctx.attempt });
+          const signature = await this.sendRawTransaction(tx);
+          this.events.emit(TxEvent.SENT, { signature, attempt: ctx.attempt });
 
-        if (options?.skipConfirmation) {
-          return this.buildResult(signature, 0, commitment, ctx.attempt, startTime, unitsConsumed, feeAmount);
-        }
-
-        const slot = await this.awaitConfirmation(signature, blockhashInfo.lastValidBlockHeight, commitment);
-        return this.buildResult(signature, slot, commitment, ctx.attempt, startTime, unitsConsumed, feeAmount);
-      },
-      {
-        ...this.config.retry,
-        ...options?.retry,
-        onRetry: async (error, attempt, delayMs) => {
-          this.events.emit(TxEvent.RETRYING, {
-            attempt,
-            maxRetries: this.config.retry?.maxRetries ?? 3,
-            error,
-            delayMs,
-          });
-
-          if (isBlockhashExpired(error)) {
-            const oldBlockhash = this.blockhashManager.getCachedBlockhash()?.blockhash ?? "";
-            await this.blockhashManager.refreshBlockhash();
-            const newBlockhash = this.blockhashManager.getCachedBlockhash()?.blockhash ?? "";
-            this.events.emit(TxEvent.BLOCKHASH_EXPIRED, { oldBlockhash, newBlockhash });
+          if (options?.skipConfirmation) {
+            return this.buildResult(signature, 0, commitment, ctx.attempt, startTime, unitsConsumed, feeAmount);
           }
+
+          const slot = await this.awaitConfirmation(signature, blockhashInfo.lastValidBlockHeight, commitment);
+          return this.buildResult(signature, slot, commitment, ctx.attempt, startTime, unitsConsumed, feeAmount);
         },
-      },
-    );
+        {
+          ...this.config.retry,
+          ...options?.retry,
+          onRetry: async (error, attempt, delayMs) => {
+            this.events.emit(TxEvent.RETRYING, {
+              attempt,
+              maxRetries: this.config.retry?.maxRetries ?? 3,
+              error,
+              delayMs,
+            });
+
+            if (isBlockhashExpired(error)) {
+              const oldBlockhash = this.blockhashManager.getCachedBlockhash()?.blockhash ?? "";
+              await this.blockhashManager.refreshBlockhash();
+              const newBlockhash = this.blockhashManager.getCachedBlockhash()?.blockhash ?? "";
+              this.events.emit(TxEvent.BLOCKHASH_EXPIRED, { oldBlockhash, newBlockhash });
+            }
+          },
+        },
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.events.emit(TxEvent.FAILED, { error: err, attempt: 0 });
+      throw err;
+    }
   }
 
   /**
@@ -137,6 +145,8 @@ export class TransactionSender {
       extraSigners?: import("@solana/web3.js").Keypair[];
     },
   ): Promise<BundleResult> {
+    if (this.destroyed) throw new SolTxError(SolTxErrorCode.NON_RETRYABLE, "TransactionSender has been destroyed");
+
     if (!this.jitoBundleSender) {
       throw new SolTxError(SolTxErrorCode.BUNDLE_FAILED, "Jito is not configured. Use .withJito() in the builder.");
     }
@@ -147,20 +157,42 @@ export class TransactionSender {
 
     // Append tip instruction to the last transaction
     const lastTx = transactions[transactions.length - 1];
-    if (lastTx && isLegacyTransaction(lastTx)) {
+    if (!lastTx) {
+      throw new SolTxError(SolTxErrorCode.INVALID_ARGUMENT, "Bundle must contain at least one transaction.");
+    }
+    if (isLegacyTransaction(lastTx)) {
       const tipIx = createTipInstruction(jitoConfig.tipPayer.publicKey, tipLamports);
       lastTx.add(tipIx);
+    } else {
+      throw new SolTxError(
+        SolTxErrorCode.INVALID_ARGUMENT,
+        "The last transaction in a Jito bundle must be a legacy Transaction (VersionedTransaction is not supported for tip injection).",
+      );
     }
 
-    // Sign all transactions
+    // Sign all transactions with the same blockhash
+    const blockhashInfo = await this.blockhashManager.getBlockhash();
     for (const tx of transactions) {
-      const blockhashInfo = await this.blockhashManager.getBlockhash();
       this.signTransaction(tx, blockhashInfo, options?.extraSigners);
     }
 
-    return this.jitoBundleSender.sendBundle(transactions, {
-      waitForConfirmation: options?.waitForConfirmation ?? true,
-    });
+    const bundleSender = this.jitoBundleSender;
+    try {
+      return await withRetry(
+        async () => {
+          return bundleSender.sendBundle(transactions, {
+            waitForConfirmation: options?.waitForConfirmation ?? true,
+          });
+        },
+        {
+          ...this.config.retry,
+        },
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.events.emit(TxEvent.BUNDLE_FAILED, { bundleId: "", error: err });
+      throw err;
+    }
   }
 
   /** Get current RPC health metrics */
@@ -170,6 +202,7 @@ export class TransactionSender {
 
   /** Clean up: stop background tasks, clear intervals */
   destroy(): void {
+    this.destroyed = true;
     this.pool.destroy();
     this.blockhashManager.destroy();
     this.events.removeAllListeners();
@@ -207,6 +240,11 @@ export class TransactionSender {
       }
       return { tx: copy, feeAmount };
     }
+    if (this.config.priorityFee !== false && !isLegacyTransaction(transaction)) {
+      this.logger.warn(
+        "Priority fee estimation is not supported for VersionedTransactions. Skipping compute budget injection.",
+      );
+    }
     return { tx: transaction, feeAmount: undefined };
   }
 
@@ -237,7 +275,6 @@ export class TransactionSender {
     const simResult = await simulateTransaction(conn, tx, simConfig, this.logger);
 
     this.events.emit(TxEvent.SIMULATED, {
-      signature: "",
       unitsConsumed: simResult.unitsConsumed,
       logs: simResult.logs,
     });

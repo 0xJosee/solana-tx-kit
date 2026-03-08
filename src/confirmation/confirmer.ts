@@ -107,45 +107,65 @@ export class TransactionConfirmer {
     cleanups: (() => void)[],
   ): Promise<ConfirmationResult> {
     return new Promise((resolve) => {
-      const timer = setInterval(async () => {
-        try {
-          const blockHeight = await connection.getBlockHeight(config.commitment);
-          if (blockHeight > lastValidBlockHeight) {
-            resolve({ status: "expired", latencyMs: latencyMs() });
-            return;
-          }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let done = false;
 
-          const statuses = await connection.getSignatureStatuses([signature]);
-          const status = statuses.value[0];
-          if (!status) return;
+      const scheduleNext = () => {
+        if (done) return;
+        timer = setTimeout(async () => {
+          try {
+            const blockHeight = await connection.getBlockHeight(config.commitment);
+            if (blockHeight > lastValidBlockHeight) {
+              done = true;
+              resolve({ status: "expired", latencyMs: latencyMs() });
+              return;
+            }
 
-          if (status.err) {
-            const errorMsg = typeof status.err === "string" ? status.err : JSON.stringify(status.err);
-            resolve({
-              status: "failed",
-              slot: status.slot,
-              error: { code: -1, message: errorMsg },
-              latencyMs: latencyMs(),
-            });
-            return;
-          }
+            const statuses = await connection.getSignatureStatuses([signature]);
+            const status = statuses.value[0];
+            if (!status) {
+              scheduleNext();
+              return;
+            }
 
-          if (status.confirmationStatus === "finalized") {
-            resolve({ status: "finalized", slot: status.slot, latencyMs: latencyMs() });
-            return;
-          }
+            if (status.err) {
+              const errorMsg = typeof status.err === "string" ? status.err : JSON.stringify(status.err);
+              done = true;
+              resolve({
+                status: "failed",
+                slot: status.slot,
+                error: { code: -1, message: errorMsg },
+                latencyMs: latencyMs(),
+              });
+              return;
+            }
 
-          if (
-            (status.confirmationStatus === "confirmed" || status.confirmationStatus === "processed") &&
-            config.commitment !== "finalized"
-          ) {
-            resolve({ status: "confirmed", slot: status.slot, latencyMs: latencyMs() });
+            if (status.confirmationStatus === "finalized") {
+              done = true;
+              resolve({ status: "finalized", slot: status.slot, latencyMs: latencyMs() });
+              return;
+            }
+
+            if (
+              (status.confirmationStatus === "confirmed" || status.confirmationStatus === "processed") &&
+              config.commitment !== "finalized"
+            ) {
+              done = true;
+              resolve({ status: "confirmed", slot: status.slot, latencyMs: latencyMs() });
+              return;
+            }
+          } catch (err) {
+            this.logger?.warn("Confirmation polling error", { error: String(err) });
           }
-        } catch (err) {
-          this.logger?.warn("Confirmation polling error", { error: String(err) });
-        }
-      }, config.pollIntervalMs);
-      cleanups.push(() => clearInterval(timer));
+          scheduleNext();
+        }, config.pollIntervalMs);
+      };
+
+      cleanups.push(() => {
+        done = true;
+        if (timer !== undefined) clearTimeout(timer);
+      });
+      scheduleNext();
     });
   }
 }
