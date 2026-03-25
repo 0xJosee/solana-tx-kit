@@ -11,6 +11,8 @@ export interface RetryConfig {
   retryPredicate?: (error: Error, attempt: number) => boolean;
   /** Called before each retry — hook for re-signing, logging, etc. */
   onRetry?: (error: Error, attempt: number, delayMs: number) => void | Promise<void>;
+  /** Maximum total wall-clock time for all retry attempts in ms. If exceeded, retries stop. */
+  totalTimeoutMs?: number | undefined;
 }
 
 export interface RetryContext {

@@ -36,6 +36,8 @@ export async function simulateTransaction(
       logs = result.value.logs;
       unitsConsumed = result.value.unitsConsumed;
     } else {
+      // Legacy Transaction overload does not support config-based options (commitment, sigVerify).
+      // Connection's default commitment is used. This is a web3.js API limitation.
       const result = await connection.simulateTransaction(transaction);
       err = result.value.err;
       logs = result.value.logs;

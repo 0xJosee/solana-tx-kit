@@ -15,6 +15,8 @@ export interface JitoConfig {
   statusPollIntervalMs?: number;
   /** Maximum time to wait for bundle confirmation in ms (default: 60000) */
   statusTimeoutMs?: number;
+  /** Allow insecure HTTP for the block engine URL (default: false). Only for local testing. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface BundleResult {

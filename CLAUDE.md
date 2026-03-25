@@ -49,10 +49,11 @@ Each module lives in its own `src/<module>/` directory with `types.ts`, implemen
 
 ### Shared Infrastructure
 
-- **`errors.ts`** — `SolTxError` (base with typed `code` field) and `RetryableError` subclass. Error codes in `SolTxErrorCode` enum.
-- **`events.ts`** — `TypedEventEmitter` extending Node's EventEmitter with generics. `TxEvent` enum for lifecycle events.
-- **`constants.ts`** — All configuration defaults (retry delays, fee bounds, timeouts, Jito tip accounts).
+- **`errors.ts`** — `SolTxError` (base with typed `code` field, `toJSON()` for safe serialization) and `RetryableError` subclass. Error codes in `SolTxErrorCode` enum.
+- **`events.ts`** — `TypedEventEmitter` extending Node's EventEmitter with generics (maxListeners: 50). `TxEvent` enum for lifecycle events.
+- **`constants.ts`** — All configuration defaults (retry delays, fee bounds, timeouts, Jito tip accounts with `JITO_MAX_TIP_LAMPORTS` safety cap).
 - **`types.ts`** — Core shared types (`SolanaTransaction` union of `Transaction | VersionedTransaction`).
+- **`validation.ts`** — Shared input validators (`validateNonNegativeInt`, `validatePositiveNumber`, `validateNonNegativeNumber`, `sanitizeUrl`). Used across all modules for config validation.
 
 ### Key Patterns
 
@@ -60,17 +61,24 @@ Each module lives in its own `src/<module>/` directory with `types.ts`, implemen
 - **Composition over inheritance**: `TransactionSender` composes modules; each module is independently usable and testable.
 - **Promise coalescing**: `BlockhashManager` deduplicates concurrent blockhash fetches.
 - **Retry-aware blockhash refresh**: On `BLOCKHASH_EXPIRED`, the sender force-refreshes and retries with a new blockhash.
-- **Resource cleanup**: Classes with background tasks (`BlockhashManager`, `HealthTracker`) expose `.destroy()` to clear intervals/listeners.
+- **Resource cleanup**: Classes with background tasks (`BlockhashManager`, `HealthTracker`, `TransactionConfirmer`, `ConnectionPool`) expose `.destroy()` with destroyed guards on all public methods.
+- **Transaction immutability**: `send()` and `sendJitoBundle()` clone transactions before mutation. Caller's originals are never modified.
+- **Input validation**: All config objects are validated at construction time. Invalid values throw `INVALID_ARGUMENT` immediately (see `validation.ts`).
+- **URL sanitization**: RPC URLs are sanitized via `sanitizeUrl()` before logging — API keys in query params and paths are masked. Always set `label` on endpoints.
 
 ### Send Pipeline Flow
 
 ```
-send(tx) → estimate priority fee → inject compute budget IXs
+send(tx) → clone transaction → estimate priority fee → inject compute budget IXs
   → [retry loop]: get blockhash → sign → simulate (optional) → send via RPC
   → confirm (WS + polling) → return SendResult
   → on blockhash expiry: refresh + retry
   → on retryable error: backoff + retry
   → on non-retryable / exhausted: throw SolTxError
+
+sendJitoBundle(txs) → clone all transactions → append tip to last tx
+  → [retry loop]: get blockhash → sign all → send bundle → poll status
+  → on blockhash expiry: refresh + re-sign + retry
 ```
 
 ### Test Structure

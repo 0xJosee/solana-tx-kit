@@ -1,5 +1,6 @@
 import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SolTxError, SolTxErrorCode } from "../../src/errors.js";
 import { TxEvent } from "../../src/events.js";
 
 const TEST_SIGNATURE = "5UfDuX7WXYzPMV3bNQHRKuN8n1MFi47kL9HteQNGPDaBbuEzivjJoSBFQMFg9M6RnN3t5C2X";
@@ -313,5 +314,327 @@ describe("TransactionSender.send()", () => {
     } finally {
       sender.destroy();
     }
+  });
+
+  it("send() throws when sender has been destroyed", async () => {
+    const sender = buildSender({ priorityFee: false, simulation: false });
+    sender.destroy();
+
+    const tx = createTestTransaction(signer);
+    try {
+      await sender.send(tx, { skipSimulation: true });
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SolTxError);
+      expect((e as SolTxError).code).toBe(SolTxErrorCode.NON_RETRYABLE);
+      expect((e as SolTxError).message).toContain("destroyed");
+    }
+  });
+
+  it("throws INVALID_ARGUMENT for negative static priority fee", async () => {
+    const sender = buildSender({ simulation: false });
+    try {
+      const tx = createTestTransaction(signer);
+      await expect(
+        sender.send(tx, {
+          priorityFee: { microLamports: -100 },
+          skipSimulation: true,
+        }),
+      ).rejects.toThrow(SolTxError);
+
+      try {
+        await sender.send(tx, {
+          priorityFee: { microLamports: -100 },
+          skipSimulation: true,
+        });
+      } catch (e) {
+        expect((e as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((e as SolTxError).message).toContain("non-negative");
+      }
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("throws INVALID_ARGUMENT for NaN static priority fee", async () => {
+    const sender = buildSender({ simulation: false });
+    try {
+      const tx = createTestTransaction(signer);
+      try {
+        await sender.send(tx, {
+          priorityFee: { microLamports: Number.NaN },
+          skipSimulation: true,
+        });
+        expect.fail("should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(SolTxError);
+        expect((e as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((e as SolTxError).message).toContain("non-negative finite");
+      }
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("throws INVALID_ARGUMENT for Infinity static priority fee", async () => {
+    const sender = buildSender({ simulation: false });
+    try {
+      const tx = createTestTransaction(signer);
+      try {
+        await sender.send(tx, {
+          priorityFee: { microLamports: Number.POSITIVE_INFINITY },
+          skipSimulation: true,
+        });
+        expect.fail("should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(SolTxError);
+        expect((e as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+      }
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("emits FAILED event when send exhausts retries", async () => {
+    mockSendRawTransaction.mockReset();
+    mockSendRawTransaction.mockRejectedValue(new Error("HTTP 503 Service Unavailable"));
+
+    const sender = buildSender({
+      priorityFee: false,
+      simulation: false,
+      retryConfig: {
+        maxRetries: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        retryPredicate: () => true,
+      },
+    });
+    try {
+      let failedEvent: { error: Error; attempt: number } | undefined;
+      sender.events.on(TxEvent.FAILED, (data) => {
+        failedEvent = data;
+      });
+
+      const tx = createTestTransaction(signer);
+      await expect(sender.send(tx, { skipSimulation: true })).rejects.toThrow();
+
+      expect(failedEvent).toBeDefined();
+      expect(failedEvent?.error).toBeInstanceOf(Error);
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("throws TRANSACTION_FAILED when confirmation returns failed status", async () => {
+    // Make the confirmer poll return a failed status
+    mockGetSignatureStatuses.mockResolvedValue({
+      value: [{ slot: 150, confirmationStatus: "confirmed", err: "InstructionError" }],
+    });
+
+    const sender = buildSender({
+      priorityFee: false,
+      simulation: false,
+      retryConfig: { maxRetries: 0 },
+    });
+    try {
+      const tx = createTestTransaction(signer);
+      await expect(sender.send(tx, { skipSimulation: true })).rejects.toThrow();
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("throws BLOCKHASH_EXPIRED when confirmation returns expired status", async () => {
+    // Make getBlockHeight return a value greater than lastValidBlockHeight
+    mockGetBlockHeight.mockResolvedValue(999_999);
+    mockGetSignatureStatuses.mockResolvedValue({
+      value: [null],
+    });
+
+    const sender = buildSender({
+      priorityFee: false,
+      simulation: false,
+      retryConfig: { maxRetries: 0 },
+    });
+    try {
+      const tx = createTestTransaction(signer);
+      await expect(sender.send(tx, { skipSimulation: true })).rejects.toThrow(/expired|Blockhash|All 1 attempts/);
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("uses config-level priority fee config for estimation", async () => {
+    // Build a sender with priority fee config (not static, not false)
+    const builder = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .withPriorityFees({ targetPercentile: 90 })
+      .disableSimulation();
+
+    const sender = builder.build();
+    try {
+      const tx = createTestTransaction(signer);
+      const result = await sender.send(tx, { skipSimulation: true });
+
+      expect(result.priorityFee).toBeDefined();
+      expect(result.priorityFee).toBeGreaterThan(0);
+      expect(mockGetRecentPrioritizationFees).toHaveBeenCalled();
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("uses per-send dynamic fee config override", async () => {
+    const sender = buildSender({ simulation: false });
+    try {
+      const tx = createTestTransaction(signer);
+      const result = await sender.send(tx, {
+        priorityFee: { targetPercentile: 50 },
+        skipSimulation: true,
+      });
+
+      expect(result.priorityFee).toBeDefined();
+      expect(mockGetRecentPrioritizationFees).toHaveBeenCalled();
+    } finally {
+      sender.destroy();
+    }
+  });
+});
+
+describe("TransactionSender.sendJitoBundle()", () => {
+  let signer: Keypair;
+  let TransactionSender: typeof import("../../src/sender/transaction-sender.js").TransactionSender;
+
+  beforeEach(async () => {
+    signer = Keypair.generate();
+
+    mockGetLatestBlockhash.mockResolvedValue(TEST_BLOCKHASH);
+    mockGetBlockHeight.mockResolvedValue(100);
+
+    const mod = await import("../../src/sender/transaction-sender.js");
+    TransactionSender = mod.TransactionSender;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("throws BUNDLE_FAILED when Jito is not configured", async () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .disablePriorityFees()
+      .disableSimulation()
+      .build();
+
+    try {
+      const tx = createTestTransaction(signer);
+      try {
+        await sender.sendJitoBundle([tx]);
+        expect.fail("should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(SolTxError);
+        expect((e as SolTxError).code).toBe(SolTxErrorCode.BUNDLE_FAILED);
+        expect((e as SolTxError).message).toContain("Jito is not configured");
+      }
+    } finally {
+      sender.destroy();
+    }
+  });
+
+  it("sendJitoBundle() throws when sender has been destroyed", async () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .disablePriorityFees()
+      .disableSimulation()
+      .build();
+
+    sender.destroy();
+
+    const tx = createTestTransaction(signer);
+    try {
+      await sender.sendJitoBundle([tx]);
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SolTxError);
+      expect((e as SolTxError).code).toBe(SolTxErrorCode.NON_RETRYABLE);
+      expect((e as SolTxError).message).toContain("destroyed");
+    }
+  });
+});
+
+describe("TransactionSender.destroy()", () => {
+  let signer: Keypair;
+  let TransactionSender: typeof import("../../src/sender/transaction-sender.js").TransactionSender;
+
+  beforeEach(async () => {
+    signer = Keypair.generate();
+
+    mockGetLatestBlockhash.mockResolvedValue(TEST_BLOCKHASH);
+    mockGetBlockHeight.mockResolvedValue(100);
+
+    const mod = await import("../../src/sender/transaction-sender.js");
+    TransactionSender = mod.TransactionSender;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("destroy() can be called without error", () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .disablePriorityFees()
+      .disableSimulation()
+      .build();
+
+    expect(() => sender.destroy()).not.toThrow();
+  });
+
+  it("destroy() removes all event listeners", () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .disablePriorityFees()
+      .disableSimulation()
+      .build();
+
+    // Add some listeners
+    sender.events.on(TxEvent.SENDING, () => {});
+    sender.events.on(TxEvent.SENT, () => {});
+    sender.events.on(TxEvent.CONFIRMED, () => {});
+
+    expect(sender.events.listenerCount(TxEvent.SENDING)).toBe(1);
+    expect(sender.events.listenerCount(TxEvent.SENT)).toBe(1);
+    expect(sender.events.listenerCount(TxEvent.CONFIRMED)).toBe(1);
+
+    sender.destroy();
+
+    expect(sender.events.listenerCount(TxEvent.SENDING)).toBe(0);
+    expect(sender.events.listenerCount(TxEvent.SENT)).toBe(0);
+    expect(sender.events.listenerCount(TxEvent.CONFIRMED)).toBe(0);
+  });
+
+  it("destroy() prevents subsequent send() calls", async () => {
+    const sender = TransactionSender.builder()
+      .rpc("https://api.mainnet-beta.solana.com")
+      .signer(signer)
+      .withConfirmation(FAST_CONFIRMATION)
+      .disablePriorityFees()
+      .disableSimulation()
+      .build();
+
+    sender.destroy();
+
+    const tx = createTestTransaction(signer);
+    await expect(sender.send(tx)).rejects.toThrow("destroyed");
   });
 });

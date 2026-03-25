@@ -124,6 +124,7 @@ export class TransactionSenderBuilder {
       throw new Error("TransactionSenderBuilder: signer is required. Call .signer()");
     }
 
-    return new TransactionSender(this.config as SenderConfig);
+    // Shallow-clone config to isolate the built sender from future builder mutations
+    return new TransactionSender({ ...this.config } as SenderConfig);
   }
 }

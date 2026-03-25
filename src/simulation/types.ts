@@ -11,6 +11,7 @@ export interface SimulationConfig {
 
 export interface SimulationResult {
   success: boolean;
+  /** CU consumed during simulation. No safety margin — add 10-20% before using as a CU limit. */
   unitsConsumed: number;
   logs: string[];
   error?:

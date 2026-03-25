@@ -31,8 +31,14 @@ export interface TxEventMap {
   [TxEvent.BUNDLE_FAILED]: { bundleId: string; error: Error };
 }
 
-/** Type-safe event emitter for transaction lifecycle events. Subscribe via `.on(TxEvent.*, handler)`. */
+/** Type-safe event emitter for transaction lifecycle events. Subscribe via `.on(TxEvent.*, handler)`.
+ *  Simulation logs in SIMULATED events may contain on-chain account data — treat as potentially sensitive. */
 export class TypedEventEmitter extends EventEmitter {
+  constructor() {
+    super();
+    this.setMaxListeners(50);
+  }
+
   override emit<K extends TxEvent>(event: K, data: TxEventMap[K]): boolean {
     return super.emit(event, data);
   }

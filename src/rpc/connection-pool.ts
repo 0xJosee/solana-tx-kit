@@ -1,6 +1,7 @@
 import { Connection } from "@solana/web3.js";
 import { SolTxError, SolTxErrorCode } from "../errors.js";
 import type { Logger } from "../types.js";
+import { sanitizeUrl } from "../validation.js";
 import { HealthTracker } from "./health-tracker.js";
 import type { ConnectionPoolConfig, HealthMetrics } from "./types.js";
 
@@ -13,14 +14,27 @@ export class ConnectionPool {
   private healthCheckInterval?: ReturnType<typeof setInterval> | undefined;
   private roundRobinIndex = 0;
   private readonly strategy: "weighted-round-robin" | "latency-based";
+  private destroyed = false;
 
   constructor(
     config: ConnectionPoolConfig,
     private readonly logger?: Logger,
   ) {
+    // M-10: Validate non-empty endpoints
+    if (config.endpoints.length === 0) {
+      throw new SolTxError(SolTxErrorCode.INVALID_ARGUMENT, "At least one RPC endpoint is required.");
+    }
+
     this.strategy = config.strategy ?? "weighted-round-robin";
 
     for (const endpoint of config.endpoints) {
+      // M-16: Validate weight > 0
+      if (endpoint.weight !== undefined && endpoint.weight <= 0) {
+        throw new SolTxError(
+          SolTxErrorCode.INVALID_ARGUMENT,
+          `Endpoint weight must be > 0, got ${endpoint.weight} for ${endpoint.label ?? sanitizeUrl(endpoint.url)}`,
+        );
+      }
       const connection = new Connection(endpoint.url, {
         commitment: config.healthCheckCommitment ?? "confirmed",
       });
@@ -30,6 +44,9 @@ export class ConnectionPool {
 
     // Start periodic health checks
     const interval = config.healthCheckIntervalMs ?? 10_000;
+    if (interval < 1_000) {
+      throw new SolTxError(SolTxErrorCode.INVALID_ARGUMENT, `healthCheckIntervalMs must be >= 1000, got ${interval}`);
+    }
     this.healthCheckInterval = setInterval(() => {
       this.runHealthChecks();
     }, interval);
@@ -37,12 +54,17 @@ export class ConnectionPool {
 
   /** Get the best available connection based on strategy */
   getConnection(): Connection {
+    if (this.destroyed)
+      throw new SolTxError(SolTxErrorCode.ALL_ENDPOINTS_UNHEALTHY, "ConnectionPool has been destroyed");
+
     const available = this.trackers.filter((t) => t.isAvailable());
 
     if (available.length === 0) {
-      // Fallback: return first tracker even if unhealthy
-      this.logger?.warn("All RPC endpoints unhealthy, using first endpoint as fallback");
-      const fallback = this.trackers[0];
+      // M-11: Round-robin across all trackers when all are unhealthy (not just first)
+      this.logger?.warn("All RPC endpoints unhealthy, using round-robin fallback");
+      const idx = this.roundRobinIndex % this.trackers.length;
+      this.roundRobinIndex = (this.roundRobinIndex + 1) % Number.MAX_SAFE_INTEGER;
+      const fallback = this.trackers[idx];
       if (!fallback) {
         throw new SolTxError(
           SolTxErrorCode.ALL_ENDPOINTS_UNHEALTHY,
@@ -60,8 +82,12 @@ export class ConnectionPool {
 
   /** Get a connection, falling back through endpoints if the first fails */
   async withFallback<T>(fn: (connection: Connection) => Promise<T>): Promise<T> {
+    if (this.destroyed)
+      throw new SolTxError(SolTxErrorCode.ALL_ENDPOINTS_UNHEALTHY, "ConnectionPool has been destroyed");
+
     const available = this.trackers.filter((t) => t.isAvailable());
-    const ordered = available.length > 0 ? available : this.trackers;
+    // M-12: Limit fallback iteration when all unhealthy
+    const ordered = available.length > 0 ? available : this.trackers.slice(0, Math.min(3, this.trackers.length));
 
     let lastError: Error | undefined;
 
@@ -75,7 +101,7 @@ export class ConnectionPool {
         const error = err instanceof Error ? err : new Error(String(err));
         tracker.recordFailure(error);
         lastError = error;
-        this.logger?.warn(`Failover: ${tracker.endpoint.label ?? tracker.endpoint.url} failed`, {
+        this.logger?.warn(`Failover: ${tracker.endpoint.label ?? sanitizeUrl(tracker.endpoint.url)} failed`, {
           error: error.message,
         });
       }
@@ -92,7 +118,7 @@ export class ConnectionPool {
   getHealthReport(): Map<string, HealthMetrics> {
     const report = new Map<string, HealthMetrics>();
     for (const tracker of this.trackers) {
-      const key = tracker.endpoint.label ?? tracker.endpoint.url;
+      const key = tracker.endpoint.label ?? sanitizeUrl(tracker.endpoint.url);
       report.set(key, tracker.getMetrics());
     }
     return report;
@@ -100,6 +126,7 @@ export class ConnectionPool {
 
   /** Stop background health checks */
   destroy(): void {
+    this.destroyed = true;
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = undefined;
@@ -120,6 +147,7 @@ export class ConnectionPool {
     return best.getConnection();
   }
 
+  // M-13: Stable round-robin — increment index independently of totalWeight changes
   private selectByWeight(available: HealthTracker[]): Connection {
     let totalWeight = 0;
     for (const tracker of available) {
@@ -127,7 +155,7 @@ export class ConnectionPool {
     }
 
     const position = this.roundRobinIndex % totalWeight;
-    this.roundRobinIndex = (this.roundRobinIndex + 1) % totalWeight;
+    this.roundRobinIndex = (this.roundRobinIndex + 1) % Number.MAX_SAFE_INTEGER;
 
     let cumulative = 0;
     for (const tracker of available) {
@@ -143,22 +171,18 @@ export class ConnectionPool {
 
   private runHealthChecks(): void {
     const promises = this.trackers.map((t) => t.healthCheck());
-    Promise.all(promises)
-      .then(() => {
-        // Update slot lag relative to highest slot
-        let highestSlot = 0;
-        for (const tracker of this.trackers) {
-          const metrics = tracker.getMetrics();
-          if (metrics.lastSlot > highestSlot) {
-            highestSlot = metrics.lastSlot;
-          }
+    Promise.allSettled(promises).then(() => {
+      // Update slot lag relative to highest slot
+      let highestSlot = 0;
+      for (const tracker of this.trackers) {
+        const metrics = tracker.getMetrics();
+        if (metrics.lastSlot > highestSlot) {
+          highestSlot = metrics.lastSlot;
         }
-        for (const tracker of this.trackers) {
-          tracker.updateSlotLag(highestSlot);
-        }
-      })
-      .catch((err) => {
-        this.logger?.warn("Health check round failed", { error: String(err) });
-      });
+      }
+      for (const tracker of this.trackers) {
+        tracker.updateSlotLag(highestSlot);
+      }
+    });
   }
 }

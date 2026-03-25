@@ -1,5 +1,9 @@
 import { PublicKey } from "@solana/web3.js";
 
+/**
+ * Jito tip accounts. Source: https://jito-labs.gitbook.io/mev/searcher-resources/json-rpc-api-reference
+ * Last verified: 2026-03-25. If Jito rotates these, update here or override via config.
+ */
 export const JITO_TIP_ACCOUNTS: readonly PublicKey[] = Object.freeze([
   new PublicKey("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5"),
   new PublicKey("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe"),
@@ -11,8 +15,11 @@ export const JITO_TIP_ACCOUNTS: readonly PublicKey[] = Object.freeze([
   new PublicKey("3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"),
 ]);
 
+/** Default Jito block engine URL (mainnet). Override via JitoConfig.blockEngineUrl for other environments. */
 export const JITO_BLOCK_ENGINE_URL = "https://mainnet.block-engine.jito.wtf";
 export const JITO_MIN_TIP_LAMPORTS = 1_000;
+/** Safety cap for Jito tips: 0.1 SOL. Override via JitoConfig.maxTipLamports. */
+export const JITO_MAX_TIP_LAMPORTS = 100_000_000;
 
 export const DEFAULT_RETRY_CONFIG = {
   maxRetries: 3,

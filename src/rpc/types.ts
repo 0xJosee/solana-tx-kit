@@ -5,7 +5,7 @@ export interface RpcEndpointConfig {
   url: string;
   /** Weight for routing (higher = preferred). Default: 1 */
   weight?: number;
-  /** Maximum requests per second for this endpoint. 0 = unlimited */
+  /** @experimental Not yet enforced. Setting this value has no effect. Reserved for future rate limiting. */
   rateLimit?: number;
   /** Human-readable label (e.g., "helius-primary") */
   label?: string;
