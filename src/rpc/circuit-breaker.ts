@@ -19,6 +19,8 @@ export class CircuitBreaker {
   private state: CircuitState = CircuitState.CLOSED;
   private failures: number[] = [];
   private lastOpenedAt = 0;
+  private probeInFlight = false;
+  private probeStartedAt = 0;
   private readonly config: CircuitBreakerConfig;
 
   constructor(config?: Partial<CircuitBreakerConfig>) {
@@ -38,6 +40,7 @@ export class CircuitBreaker {
   }
 
   recordSuccess(): void {
+    this.probeInFlight = false;
     if (this.state === CircuitState.HALF_OPEN) {
       this.state = CircuitState.CLOSED;
       this.failures = [];
@@ -45,6 +48,7 @@ export class CircuitBreaker {
   }
 
   recordFailure(): void {
+    this.probeInFlight = false;
     const now = Date.now();
 
     if (this.state === CircuitState.HALF_OPEN) {
@@ -70,7 +74,17 @@ export class CircuitBreaker {
 
   canExecute(): boolean {
     const current = this.currentState;
-    return current === CircuitState.CLOSED || current === CircuitState.HALF_OPEN;
+    if (current === CircuitState.HALF_OPEN) {
+      // Auto-reset probe flag if the probe has been in-flight for longer than the reset timeout
+      // (e.g., caller got a connection but never recorded success/failure)
+      if (this.probeInFlight && Date.now() - this.probeStartedAt < this.config.resetTimeoutMs) {
+        return false;
+      }
+      this.probeInFlight = true;
+      this.probeStartedAt = Date.now();
+      return true;
+    }
+    return current === CircuitState.CLOSED;
   }
 
   reset(): void {

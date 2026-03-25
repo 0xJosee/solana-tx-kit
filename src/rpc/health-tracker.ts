@@ -1,5 +1,6 @@
 import type { Connection } from "@solana/web3.js";
 import type { Logger } from "../types.js";
+import { sanitizeUrl } from "../validation.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import type { CircuitBreakerConfig, HealthMetrics, RpcEndpointConfig } from "./types.js";
 import { CircuitState } from "./types.js";
@@ -20,22 +21,33 @@ export class HealthTracker {
     circuitState: CircuitState.CLOSED,
   };
 
+  readonly endpoint: Readonly<RpcEndpointConfig>;
+
   constructor(
-    readonly endpoint: RpcEndpointConfig,
+    endpoint: RpcEndpointConfig,
     private readonly connection: Connection,
     private readonly logger?: Logger,
     circuitBreakerConfig?: Partial<CircuitBreakerConfig>,
   ) {
+    this.endpoint = Object.freeze({ ...endpoint });
     this.breaker = new CircuitBreaker(circuitBreakerConfig);
   }
 
   async healthCheck(): Promise<void> {
     const start = Date.now();
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     try {
-      const slot = await this.connection.getSlot();
+      const slot = await Promise.race([
+        this.connection.getSlot(),
+        new Promise<never>((_, reject) => {
+          timerId = setTimeout(() => reject(new Error("Health check timed out")), 5_000);
+        }),
+      ]);
+      if (timerId !== undefined) clearTimeout(timerId);
       const latency = Date.now() - start;
       this.recordSuccess(latency, slot);
     } catch (err) {
+      if (timerId !== undefined) clearTimeout(timerId);
       this.recordFailure(err instanceof Error ? err : new Error(String(err)));
     }
   }
@@ -65,7 +77,7 @@ export class HealthTracker {
     this.breaker.recordFailure();
     this.updateErrorRate();
     this.metrics.circuitState = this.breaker.currentState;
-    this.logger?.warn(`RPC endpoint ${this.endpoint.label ?? this.endpoint.url} error`, {
+    this.logger?.warn(`RPC endpoint ${this.endpoint.label ?? sanitizeUrl(this.endpoint.url)} error`, {
       error: error.message,
       circuitState: this.metrics.circuitState,
     });

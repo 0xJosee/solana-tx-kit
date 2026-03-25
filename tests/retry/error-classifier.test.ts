@@ -51,6 +51,41 @@ describe("classifyError", () => {
     expect(result.retryable).toBe(false);
   });
 
+  it("classifies 'Node is behind' as retryable without needsResign", () => {
+    const result = classifyError(new Error("Node is behind by 50 slots"));
+    expect(result.retryable).toBe(true);
+    expect(result.needsResign).toBe(false);
+    expect(result.errorType).toBe("Node is behind");
+  });
+
+  it("classifies 'node is unhealthy' as retryable without needsResign", () => {
+    const result = classifyError(new Error("node is unhealthy"));
+    expect(result.retryable).toBe(true);
+    expect(result.needsResign).toBe(false);
+  });
+
+  it("classifies http status 429 property as rate limited", () => {
+    const err = new Error("Request failed") as Error & { status: number };
+    err.status = 429;
+    const result = classifyError(err);
+    expect(result.retryable).toBe(true);
+    expect(result.errorType).toBe(SolTxErrorCode.RATE_LIMITED);
+  });
+
+  it("classifies http statusCode 503 property as service unavailable", () => {
+    const err = new Error("Request failed") as Error & { statusCode: number };
+    err.statusCode = 503;
+    const result = classifyError(err);
+    expect(result.retryable).toBe(true);
+    expect(result.errorType).toBe(SolTxErrorCode.SERVICE_UNAVAILABLE);
+  });
+
+  it("classifies insufficient funds with INSUFFICIENT_FUNDS error type", () => {
+    const result = classifyError(new Error("insufficient funds for transfer"));
+    expect(result.retryable).toBe(false);
+    expect(result.errorType).toBe(SolTxErrorCode.INSUFFICIENT_FUNDS);
+  });
+
   it("classifies unknown errors as non-retryable", () => {
     const result = classifyError(new Error("Something random happened"));
     expect(result.retryable).toBe(false);
@@ -96,5 +131,15 @@ describe("isRateLimited", () => {
 
   it("returns false for other errors", () => {
     expect(isRateLimited(new Error("some error"))).toBe(false);
+  });
+
+  it("returns true for error with status 429 property", () => {
+    const err = new Error("Failed") as Error & { status: number };
+    err.status = 429;
+    expect(isRateLimited(err)).toBe(true);
+  });
+
+  it("returns true for status 429 message", () => {
+    expect(isRateLimited(new Error("status 429"))).toBe(true);
   });
 });

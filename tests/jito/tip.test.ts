@@ -1,6 +1,6 @@
 import { Keypair } from "@solana/web3.js";
 import { beforeEach, describe, expect, it } from "vitest";
-import { JITO_TIP_ACCOUNTS } from "../../src/constants.js";
+import { JITO_MAX_TIP_LAMPORTS, JITO_TIP_ACCOUNTS } from "../../src/constants.js";
 import { createTipInstruction, getNextTipAccount, resetTipRotation } from "../../src/jito/tip.js";
 
 describe("tip", () => {
@@ -46,6 +46,55 @@ describe("tip", () => {
       const ix = createTipInstruction(payer.publicKey, 100); // Below minimum
       // The instruction should still be created (Math.max enforces min)
       expect(ix).toBeDefined();
+    });
+
+    it("throws on NaN lamports", () => {
+      const payer = Keypair.generate();
+      expect(() => createTipInstruction(payer.publicKey, Number.NaN)).toThrow("non-negative finite number");
+    });
+
+    it("throws on negative lamports", () => {
+      const payer = Keypair.generate();
+      expect(() => createTipInstruction(payer.publicKey, -1)).toThrow("non-negative finite number");
+    });
+
+    it("throws on Infinity lamports", () => {
+      const payer = Keypair.generate();
+      expect(() => createTipInstruction(payer.publicKey, Number.POSITIVE_INFINITY)).toThrow(
+        "non-negative finite number",
+      );
+    });
+
+    it("clamps to maxTipLamports (default JITO_MAX_TIP_LAMPORTS)", () => {
+      const payer = Keypair.generate();
+      // A value well above the default max should still produce a valid instruction
+      const ix = createTipInstruction(payer.publicKey, JITO_MAX_TIP_LAMPORTS + 1_000_000);
+      expect(ix).toBeDefined();
+      expect(ix.programId.toBase58()).toBe("11111111111111111111111111111111");
+    });
+
+    it("respects custom bounds (min/max)", () => {
+      const payer = Keypair.generate();
+      // With custom bounds, value below min gets clamped up, above max gets clamped down
+      const ixLow = createTipInstruction(payer.publicKey, 10, { minTipLamports: 500, maxTipLamports: 5_000 });
+      expect(ixLow).toBeDefined();
+
+      const ixHigh = createTipInstruction(payer.publicKey, 10_000, { minTipLamports: 500, maxTipLamports: 5_000 });
+      expect(ixHigh).toBeDefined();
+    });
+
+    it("throws when maxTipLamports is 0", () => {
+      const payer = Keypair.generate();
+      expect(() => createTipInstruction(payer.publicKey, 1_000, { maxTipLamports: 0 })).toThrow(
+        "maxTipLamports must be > 0",
+      );
+    });
+
+    it("throws when minTipLamports > maxTipLamports", () => {
+      const payer = Keypair.generate();
+      expect(() =>
+        createTipInstruction(payer.publicKey, 1_000, { minTipLamports: 10_000, maxTipLamports: 5_000 }),
+      ).toThrow("minTipLamports (10000) must be <= maxTipLamports (5000)");
     });
   });
 });

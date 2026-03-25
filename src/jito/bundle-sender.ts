@@ -27,7 +27,10 @@ export class JitoBundleSender {
     private readonly logger?: Logger,
     private readonly events?: TypedEventEmitter,
   ) {
-    this.blockEngineUrl = JitoBundleSender.validateUrl(config.blockEngineUrl ?? JITO_BLOCK_ENGINE_URL);
+    this.blockEngineUrl = JitoBundleSender.validateUrl(
+      config.blockEngineUrl ?? JITO_BLOCK_ENGINE_URL,
+      config.allowInsecureHttp,
+    );
     this.pollIntervalMs = config.statusPollIntervalMs ?? 2_000;
     this.timeoutMs = config.statusTimeoutMs ?? 60_000;
   }
@@ -112,11 +115,18 @@ export class JitoBundleSender {
     return result;
   }
 
-  private static validateUrl(url: string): string {
+  private static validateUrl(url: string, allowInsecureHttp?: boolean): string {
     if (!url.startsWith("https://") && !url.startsWith("http://")) {
       throw new SolTxError(
-        SolTxErrorCode.BUNDLE_FAILED,
-        `Invalid block engine URL: must start with https:// or http://, got "${url}"`,
+        SolTxErrorCode.INVALID_ARGUMENT,
+        `Invalid block engine URL: must start with https://, got "${url}"`,
+      );
+    }
+    if (url.startsWith("http://") && !allowInsecureHttp) {
+      throw new SolTxError(
+        SolTxErrorCode.INVALID_ARGUMENT,
+        "Insecure HTTP is not allowed for the Jito block engine (signed transactions would be sent in cleartext). " +
+          "Use https:// or set allowInsecureHttp: true in JitoConfig to override.",
       );
     }
     // Strip trailing slash for consistent URL construction

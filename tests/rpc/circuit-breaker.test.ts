@@ -70,4 +70,73 @@ describe("CircuitBreaker", () => {
     expect(cb.currentState).toBe(CircuitState.CLOSED);
     expect(cb.canExecute()).toBe(true);
   });
+
+  describe("constructor validation", () => {
+    it("throws on failureThreshold <= 0", () => {
+      expect(() => new CircuitBreaker({ failureThreshold: 0 })).toThrow("failureThreshold must be > 0");
+      expect(() => new CircuitBreaker({ failureThreshold: -1 })).toThrow("failureThreshold must be > 0");
+    });
+
+    it("throws on resetTimeoutMs <= 0", () => {
+      expect(() => new CircuitBreaker({ resetTimeoutMs: 0 })).toThrow("resetTimeoutMs must be > 0");
+      expect(() => new CircuitBreaker({ resetTimeoutMs: -5 })).toThrow("resetTimeoutMs must be > 0");
+    });
+  });
+
+  describe("probeInFlight guard in HALF_OPEN", () => {
+    it("canExecute() returns false for second caller in HALF_OPEN", () => {
+      const cb = new CircuitBreaker({ failureThreshold: 2, resetTimeoutMs: 5_000, windowMs: 60_000 });
+      cb.recordFailure();
+      cb.recordFailure();
+      expect(cb.currentState).toBe(CircuitState.OPEN);
+
+      vi.advanceTimersByTime(5_000);
+      expect(cb.currentState).toBe(CircuitState.HALF_OPEN);
+
+      // First caller gets the probe slot
+      expect(cb.canExecute()).toBe(true);
+      // Second caller is blocked while probe is in flight
+      expect(cb.canExecute()).toBe(false);
+    });
+
+    it("probeInFlight resets on recordSuccess", () => {
+      const cb = new CircuitBreaker({ failureThreshold: 2, resetTimeoutMs: 5_000, windowMs: 60_000 });
+      cb.recordFailure();
+      cb.recordFailure();
+      vi.advanceTimersByTime(5_000);
+
+      // First caller takes the probe
+      expect(cb.canExecute()).toBe(true);
+      // Probe in flight — second caller blocked
+      expect(cb.canExecute()).toBe(false);
+
+      // Probe succeeds — resets to CLOSED, probeInFlight cleared
+      cb.recordSuccess();
+      expect(cb.currentState).toBe(CircuitState.CLOSED);
+      // Now canExecute should be true again (CLOSED state)
+      expect(cb.canExecute()).toBe(true);
+    });
+
+    it("probeInFlight resets on recordFailure", () => {
+      const cb = new CircuitBreaker({ failureThreshold: 2, resetTimeoutMs: 5_000, windowMs: 60_000 });
+      cb.recordFailure();
+      cb.recordFailure();
+      vi.advanceTimersByTime(5_000);
+
+      // First caller takes the probe
+      expect(cb.canExecute()).toBe(true);
+      // Probe in flight — second caller blocked
+      expect(cb.canExecute()).toBe(false);
+
+      // Probe fails — goes back to OPEN, probeInFlight cleared
+      cb.recordFailure();
+      expect(cb.currentState).toBe(CircuitState.OPEN);
+
+      // After another timeout, transition to HALF_OPEN again
+      vi.advanceTimersByTime(5_000);
+      expect(cb.currentState).toBe(CircuitState.HALF_OPEN);
+      // probeInFlight was reset, so the first caller can take it again
+      expect(cb.canExecute()).toBe(true);
+    });
+  });
 });

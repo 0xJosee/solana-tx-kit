@@ -42,6 +42,10 @@ export class SolTxError extends Error {
     this.cause = options?.cause;
     this.context = options?.context;
   }
+
+  toJSON(): Record<string, unknown> {
+    return { name: this.name, code: this.code, message: this.message, context: this.context };
+  }
 }
 
 /** A SolTxError that indicates the operation can be retried after a delay */

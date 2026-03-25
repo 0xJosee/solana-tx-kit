@@ -16,7 +16,7 @@ import { ConnectionPool } from "../rpc/connection-pool.js";
 import type { HealthMetrics } from "../rpc/types.js";
 import { simulateTransaction } from "../simulation/simulator.js";
 import type { Logger, SolanaTransaction } from "../types.js";
-import { isLegacyTransaction } from "../utils.js";
+import { cloneTransaction, isLegacyTransaction } from "../utils.js";
 import { TransactionSenderBuilder } from "./builder.js";
 import { type SendOptions, type SendResult, type SenderConfig, isConnectionPoolConfig, isStaticFee } from "./types.js";
 
@@ -76,7 +76,11 @@ export class TransactionSender {
    *   6. Send via RPC (with retry + failover)
    *   7. Confirm (WebSocket + polling)
    *
-   * @param transaction - A legacy or versioned Solana transaction. Not mutated for legacy transactions.
+   * **Note:** The `commitment` option here controls confirmation behaviour only.
+   * Blockhash fetching uses BlockhashManagerConfig.commitment, and simulation uses
+   * SimulationConfig.commitment. Configure these separately if needed.
+   *
+   * @param transaction - A legacy or versioned Solana transaction. The original is never mutated.
    * @param options - Per-send overrides for priority fee, simulation, confirmation, and retry.
    * @returns The confirmed transaction result including signature, slot, and timing info.
    * @throws {SolTxError} On simulation failure, non-retryable errors, or exhausted retries.
@@ -128,7 +132,11 @@ export class TransactionSender {
       );
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.events.emit(TxEvent.FAILED, { error: err, attempt: 0 });
+      const attempt =
+        err instanceof SolTxError && err.context
+          ? ((err.context.attempt as number | undefined) ?? (err.context.maxRetries as number | undefined) ?? 0)
+          : 0;
+      this.events.emit(TxEvent.FAILED, { error: err, attempt });
       throw err;
     }
   }
@@ -155,13 +163,19 @@ export class TransactionSender {
     const jitoConfig = this.config.jito as import("../jito/types.js").JitoConfig;
     const tipLamports = options?.tipLamports ?? jitoConfig.tipLamports ?? 10_000;
 
-    // Append tip instruction to the last transaction
-    const lastTx = transactions[transactions.length - 1];
+    // Clone all transactions to avoid mutating caller's originals
+    const txCopies = transactions.map(cloneTransaction);
+
+    // Append tip instruction to the last transaction (clone)
+    const lastTx = txCopies[txCopies.length - 1];
     if (!lastTx) {
       throw new SolTxError(SolTxErrorCode.INVALID_ARGUMENT, "Bundle must contain at least one transaction.");
     }
     if (isLegacyTransaction(lastTx)) {
-      const tipIx = createTipInstruction(jitoConfig.tipPayer.publicKey, tipLamports);
+      const tipIx = createTipInstruction(jitoConfig.tipPayer.publicKey, tipLamports, {
+        minTipLamports: jitoConfig.minTipLamports,
+        maxTipLamports: jitoConfig.maxTipLamports,
+      });
       lastTx.add(tipIx);
     } else {
       throw new SolTxError(
@@ -170,22 +184,27 @@ export class TransactionSender {
       );
     }
 
-    // Sign all transactions with the same blockhash
-    const blockhashInfo = await this.blockhashManager.getBlockhash();
-    for (const tx of transactions) {
-      this.signTransaction(tx, blockhashInfo, options?.extraSigners);
-    }
-
     const bundleSender = this.jitoBundleSender;
     try {
       return await withRetry(
         async () => {
-          return bundleSender.sendBundle(transactions, {
+          // Fetch blockhash and sign inside retry loop so expired blockhashes are refreshed
+          const blockhashInfo = await this.blockhashManager.getBlockhash();
+          for (const tx of txCopies) {
+            this.signTransaction(tx, blockhashInfo, options?.extraSigners);
+          }
+
+          return bundleSender.sendBundle(txCopies, {
             waitForConfirmation: options?.waitForConfirmation ?? true,
           });
         },
         {
           ...this.config.retry,
+          onRetry: async (error) => {
+            if (isBlockhashExpired(error)) {
+              await this.blockhashManager.refreshBlockhash();
+            }
+          },
         },
       );
     } catch (error) {
@@ -200,11 +219,14 @@ export class TransactionSender {
     return this.pool.getHealthReport();
   }
 
-  /** Clean up: stop background tasks, clear intervals */
+  /** Clean up: stop background tasks, clear intervals.
+   *  Must only be called after all in-flight send() promises have settled.
+   *  Calling destroy() while send() is in-flight may cause events to be silently dropped. */
   destroy(): void {
     this.destroyed = true;
     this.pool.destroy();
     this.blockhashManager.destroy();
+    this.confirmer.destroy();
     this.events.removeAllListeners();
   }
 
@@ -245,7 +267,7 @@ export class TransactionSender {
         "Priority fee estimation is not supported for VersionedTransactions. Skipping compute budget injection.",
       );
     }
-    return { tx: transaction, feeAmount: undefined };
+    return { tx: cloneTransaction(transaction), feeAmount: undefined };
   }
 
   /** Set blockhash, fee payer, and sign the transaction with all signers */
@@ -265,7 +287,8 @@ export class TransactionSender {
     }
   }
 
-  /** Run simulation if enabled; returns compute units consumed */
+  /** Run simulation if enabled; returns compute units consumed.
+   *  Note: simulation may use a different connection than the subsequent send (pool routing). */
   private async runSimulation(tx: SolanaTransaction, options?: SendOptions): Promise<number | undefined> {
     const skip = options?.skipSimulation ?? this.config.simulation === false;
     if (skip) return undefined;
@@ -290,7 +313,9 @@ export class TransactionSender {
     return simResult.unitsConsumed;
   }
 
-  /** Send serialized transaction via the connection pool with fallback */
+  /** Send serialized transaction via the connection pool with fallback.
+   *  Always uses skipPreflight: true — the library handles simulation separately.
+   *  If simulation is disabled, there is no pre-send validation. */
   private async sendRawTransaction(tx: SolanaTransaction): Promise<string> {
     return this.pool.withFallback(async (conn) => {
       const serialized = tx.serialize();
@@ -348,7 +373,15 @@ export class TransactionSender {
 
   private async resolvePriorityFee(options?: SendOptions): Promise<number> {
     if (options?.priorityFee && isStaticFee(options.priorityFee)) {
-      return options.priorityFee.microLamports;
+      const fee = options.priorityFee.microLamports;
+      if (!Number.isFinite(fee) || fee < 0) {
+        throw new SolTxError(
+          SolTxErrorCode.INVALID_ARGUMENT,
+          `Static priority fee must be a non-negative finite number, got ${fee}`,
+        );
+      }
+      const maxCap = DEFAULT_PRIORITY_FEE_CONFIG.maxMicroLamports;
+      return Math.min(fee, maxCap);
     }
 
     const conn = this.pool.getConnection();

@@ -169,6 +169,48 @@ describe("HealthTracker", () => {
     });
   });
 
+  describe("healthCheck()", () => {
+    it("records success on successful getSlot", async () => {
+      mockGetSlot.mockResolvedValue(150);
+      const tracker = createTracker();
+
+      await tracker.healthCheck();
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.successCount).toBe(1);
+      expect(metrics.lastSlot).toBe(150);
+      expect(metrics.latencyEma).toBeGreaterThanOrEqual(0);
+    });
+
+    it("records failure on getSlot error", async () => {
+      mockGetSlot.mockRejectedValue(new Error("RPC unreachable"));
+      const tracker = createTracker();
+
+      await tracker.healthCheck();
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.errorCount).toBe(1);
+      expect(metrics.successCount).toBe(0);
+    });
+
+    it("records failure on timeout (5s)", async () => {
+      // getSlot never resolves — simulate a hang
+      mockGetSlot.mockImplementation(() => new Promise(() => {}));
+      const tracker = createTracker();
+
+      const healthCheckPromise = tracker.healthCheck();
+
+      // Advance past the 5s timeout
+      await vi.advanceTimersByTimeAsync(5_100);
+
+      await healthCheckPromise;
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.errorCount).toBe(1);
+      expect(metrics.successCount).toBe(0);
+    });
+  });
+
   describe("getMetrics()", () => {
     it("returns a copy, not a reference to internal metrics", () => {
       const tracker = createTracker();

@@ -1,6 +1,7 @@
 import type { Connection } from "@solana/web3.js";
 import { DEFAULT_PRIORITY_FEE_CONFIG } from "../constants.js";
 import { SolTxError, SolTxErrorCode } from "../errors.js";
+import { validateNonNegativeNumber } from "../validation.js";
 import type { FeeEstimateConfig, FeeEstimateResult } from "./types.js";
 
 function percentile(sorted: number[], p: number): number {
@@ -19,11 +20,27 @@ export async function estimatePriorityFee(
 ): Promise<FeeEstimateResult> {
   const resolved = { ...DEFAULT_PRIORITY_FEE_CONFIG, ...config };
 
+  validateNonNegativeNumber(resolved.minMicroLamports, "minMicroLamports");
+  validateNonNegativeNumber(resolved.maxMicroLamports, "maxMicroLamports");
+  if (resolved.minMicroLamports > resolved.maxMicroLamports) {
+    throw new SolTxError(
+      SolTxErrorCode.INVALID_ARGUMENT,
+      `minMicroLamports (${resolved.minMicroLamports}) must be <= maxMicroLamports (${resolved.maxMicroLamports})`,
+    );
+  }
+
+  let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
     const accounts = resolved.writableAccounts?.map((a) => a.toBase58());
-    const fees = await connection.getRecentPrioritizationFees(
-      accounts ? { lockedWritableAccounts: accounts.map((a) => ({ toBase58: () => a }) as never) } : undefined,
-    );
+    const fees = await Promise.race([
+      connection.getRecentPrioritizationFees(
+        accounts ? { lockedWritableAccounts: accounts.map((a) => ({ toBase58: () => a }) as never) } : undefined,
+      ),
+      new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => reject(new Error("Fee estimation timed out")), 10_000);
+      }),
+    ]);
+    if (timerId !== undefined) clearTimeout(timerId);
 
     // Extract non-zero fees and sort
     const feeValues = fees.map((f) => f.prioritizationFee).filter((f) => f > 0);
@@ -54,6 +71,7 @@ export async function estimatePriorityFee(
       sampleCount: feeValues.length,
     };
   } catch (err) {
+    if (timerId !== undefined) clearTimeout(timerId);
     throw new SolTxError(
       SolTxErrorCode.FEE_ESTIMATION_FAILED,
       "Failed to estimate priority fees. Use disablePriorityFees() or pass { priorityFee: { microLamports: N } } as a static override.",

@@ -168,13 +168,14 @@ describe("ConnectionPool", () => {
       expect(report.has("rpc-3")).toBe(true);
     });
 
-    it("uses endpoint URL as key when no label is set", () => {
+    it("uses sanitized endpoint URL as key when no label is set", () => {
       const p = createPool({
         endpoints: [{ url: "https://rpc-unlabeled.example.com" }],
       });
 
       const report = p.getHealthReport();
-      expect(report.has("https://rpc-unlabeled.example.com")).toBe(true);
+      // URL is sanitized (query params stripped, API key paths masked)
+      expect(report.has("https://rpc-unlabeled.example.com/")).toBe(true);
     });
 
     it("returns valid HealthMetrics objects", () => {
@@ -258,6 +259,80 @@ describe("ConnectionPool", () => {
       expect(connections[0]).toBe(connections[2]);
       expect(connections[1]).toBe(connections[3]);
       expect(connections[0]).not.toBe(connections[1]);
+    });
+  });
+
+  describe("constructor validation", () => {
+    it("throws INVALID_ARGUMENT on empty endpoints array", () => {
+      expect(() => createPool({ endpoints: [] })).toThrow(SolTxError);
+      try {
+        createPool({ endpoints: [] });
+      } catch (err) {
+        expect((err as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((err as SolTxError).message).toContain("At least one RPC endpoint is required");
+      }
+    });
+
+    it("throws INVALID_ARGUMENT on weight: 0", () => {
+      expect(() =>
+        createPool({
+          endpoints: [{ url: "https://rpc-1.example.com", label: "rpc-1", weight: 0 }],
+        }),
+      ).toThrow(SolTxError);
+      try {
+        createPool({
+          endpoints: [{ url: "https://rpc-1.example.com", label: "rpc-1", weight: 0 }],
+        });
+      } catch (err) {
+        expect((err as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((err as SolTxError).message).toContain("weight must be > 0");
+      }
+    });
+
+    it("throws INVALID_ARGUMENT on weight: -1", () => {
+      expect(() =>
+        createPool({
+          endpoints: [{ url: "https://rpc-1.example.com", label: "rpc-1", weight: -1 }],
+        }),
+      ).toThrow(SolTxError);
+      try {
+        createPool({
+          endpoints: [{ url: "https://rpc-1.example.com", label: "rpc-1", weight: -1 }],
+        });
+      } catch (err) {
+        expect((err as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((err as SolTxError).message).toContain("weight must be > 0");
+      }
+    });
+
+    it("throws INVALID_ARGUMENT on healthCheckIntervalMs < 1000", () => {
+      expect(() => createPool({ healthCheckIntervalMs: 500 })).toThrow(SolTxError);
+      try {
+        createPool({ healthCheckIntervalMs: 500 });
+      } catch (err) {
+        expect((err as SolTxError).code).toBe(SolTxErrorCode.INVALID_ARGUMENT);
+        expect((err as SolTxError).message).toContain("healthCheckIntervalMs must be >= 1000");
+      }
+    });
+  });
+
+  describe("destroyed pool guards", () => {
+    it("getConnection() throws after destroy()", () => {
+      const p = createPool();
+      p.destroy();
+      pool = undefined; // prevent afterEach double-destroy
+
+      expect(() => p.getConnection()).toThrow(SolTxError);
+      expect(() => p.getConnection()).toThrow("destroyed");
+    });
+
+    it("withFallback() throws after destroy()", async () => {
+      const p = createPool();
+      p.destroy();
+      pool = undefined; // prevent afterEach double-destroy
+
+      await expect(p.withFallback(async () => "ok")).rejects.toThrow(SolTxError);
+      await expect(p.withFallback(async () => "ok")).rejects.toThrow("destroyed");
     });
   });
 

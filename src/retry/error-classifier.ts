@@ -54,11 +54,23 @@ export function classifyError(error: Error): ErrorClassification {
     return { retryable: true, needsResign: false, errorType: code };
   }
 
-  // HTTP status code detection
-  if (msg.includes("429") || msg.includes("too many requests")) {
+  // HTTP status code detection — check numeric status via property first, then message patterns
+  const errRecord = error as unknown as Record<string, unknown>;
+  const httpStatus = errRecord.status ?? errRecord.statusCode;
+  if (
+    httpStatus === 429 ||
+    msg.includes("too many requests") ||
+    msg.includes("http 429") ||
+    msg.includes("status 429")
+  ) {
     return { retryable: true, needsResign: false, errorType: SolTxErrorCode.RATE_LIMITED };
   }
-  if (msg.includes("503") || msg.includes("service unavailable")) {
+  if (
+    httpStatus === 503 ||
+    msg.includes("service unavailable") ||
+    msg.includes("http 503") ||
+    msg.includes("status 503")
+  ) {
     return { retryable: true, needsResign: false, errorType: SolTxErrorCode.SERVICE_UNAVAILABLE };
   }
 
@@ -81,6 +93,9 @@ export function isBlockhashExpired(error: Error): boolean {
 }
 
 export function isRateLimited(error: Error): boolean {
+  const errRecord2 = error as unknown as Record<string, unknown>;
+  const httpStatus2 = errRecord2.status ?? errRecord2.statusCode;
+  if (httpStatus2 === 429) return true;
   const msg = (error.message ?? "").toLowerCase();
-  return msg.includes("429") || msg.includes("too many requests");
+  return msg.includes("too many requests") || msg.includes("http 429") || msg.includes("status 429");
 }

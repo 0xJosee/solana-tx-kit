@@ -1,8 +1,15 @@
 import type { Connection } from "@solana/web3.js";
 import { DEFAULT_CONFIRMATION_CONFIG } from "../constants.js";
+import { SolTxError, SolTxErrorCode } from "../errors.js";
 import { TxEvent, type TypedEventEmitter } from "../events.js";
 import type { Logger } from "../types.js";
 import type { ConfirmationConfig, ConfirmationResult } from "./types.js";
+
+const MIN_POLL_INTERVAL_MS = 500;
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 300_000;
+const WS_SUB_TIMEOUT_MS = 30_000;
+const MAX_CONSECUTIVE_POLL_FAILURES = 20;
 
 /**
  * Confirms a transaction by signature.
@@ -14,6 +21,8 @@ import type { ConfirmationConfig, ConfirmationResult } from "./types.js";
  * 4. First signal wins via Promise.race; losers cleaned up in finally
  */
 export class TransactionConfirmer {
+  private destroyed = false;
+
   constructor(
     private readonly logger?: Logger,
     private readonly events?: TypedEventEmitter,
@@ -25,7 +34,16 @@ export class TransactionConfirmer {
     lastValidBlockHeight: number,
     config?: Partial<ConfirmationConfig>,
   ): Promise<ConfirmationResult> {
+    if (this.destroyed) {
+      throw new SolTxError(SolTxErrorCode.NON_RETRYABLE, "TransactionConfirmer has been destroyed");
+    }
+
     const resolved: ConfirmationConfig = { ...DEFAULT_CONFIRMATION_CONFIG, ...config };
+
+    // M-2: Clamp config values to safe ranges
+    resolved.pollIntervalMs = Math.max(resolved.pollIntervalMs, MIN_POLL_INTERVAL_MS);
+    resolved.timeoutMs = Math.min(Math.max(resolved.timeoutMs, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+
     const startTime = Date.now();
     const latencyMs = () => Date.now() - startTime;
 
@@ -56,6 +74,11 @@ export class TransactionConfirmer {
     } finally {
       for (const cleanup of cleanups) cleanup();
     }
+  }
+
+  /** Stop accepting new confirmations */
+  destroy(): void {
+    this.destroyed = true;
   }
 
   private subscribeWebSocket(
@@ -91,6 +114,14 @@ export class TransactionConfirmer {
         cleanups.push(() => {
           connection.removeSignatureListener(subId).catch(() => {});
         });
+
+        // M-4: WS sub-timeout — if no callback fires within 30s, clean up subscription
+        // The promise stays pending; polling or global timeout will win the race
+        const wsTimeout = setTimeout(() => {
+          this.logger?.debug("WebSocket subscription timed out, relying on polling");
+          connection.removeSignatureListener(subId).catch(() => {});
+        }, WS_SUB_TIMEOUT_MS);
+        cleanups.push(() => clearTimeout(wsTimeout));
       } catch (err) {
         this.logger?.warn("WebSocket subscription failed, relying on polling", { error: String(err) });
         // Never resolve — let polling or timeout win
@@ -109,6 +140,7 @@ export class TransactionConfirmer {
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let done = false;
+      let consecutivePollFailures = 0;
 
       const scheduleNext = () => {
         if (done) return;
@@ -124,9 +156,12 @@ export class TransactionConfirmer {
             const statuses = await connection.getSignatureStatuses([signature]);
             const status = statuses.value[0];
             if (!status) {
+              consecutivePollFailures = 0;
               scheduleNext();
               return;
             }
+
+            consecutivePollFailures = 0;
 
             if (status.err) {
               const errorMsg = typeof status.err === "string" ? status.err : JSON.stringify(status.err);
@@ -146,16 +181,32 @@ export class TransactionConfirmer {
               return;
             }
 
-            if (
-              (status.confirmationStatus === "confirmed" || status.confirmationStatus === "processed") &&
-              config.commitment !== "finalized"
-            ) {
+            // M-1: Only accept "confirmed" for confirmed commitment, "processed" only for processed commitment
+            if (status.confirmationStatus === "confirmed" && config.commitment !== "finalized") {
+              done = true;
+              resolve({ status: "confirmed", slot: status.slot, latencyMs: latencyMs() });
+              return;
+            }
+
+            if (status.confirmationStatus === "processed" && config.commitment === "processed") {
               done = true;
               resolve({ status: "confirmed", slot: status.slot, latencyMs: latencyMs() });
               return;
             }
           } catch (err) {
-            this.logger?.warn("Confirmation polling error", { error: String(err) });
+            // M-5: Track consecutive poll failures and escalate
+            consecutivePollFailures++;
+            const logLevel = consecutivePollFailures >= 10 ? "error" : "warn";
+            this.logger?.[logLevel]("Confirmation polling error", {
+              error: String(err),
+              consecutiveFailures: consecutivePollFailures,
+            });
+
+            if (consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+              done = true;
+              resolve({ status: "expired", latencyMs: latencyMs() });
+              return;
+            }
           }
           scheduleNext();
         }, config.pollIntervalMs);
